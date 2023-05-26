@@ -1,7 +1,7 @@
 #include <iostream>
 #include <stdio.h>
 #include <mpi.h>
-#include <pthreads.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <math.h>
@@ -128,11 +128,6 @@ void* executeFunc(void* me) {
 	double iterTime = 0;
 	double globalRes = 0;
 
-	char threadRankPath[5]; // массив символов куда будет записываться путь к файлу, который будет создан
-	threadRankPath[0] = rank + '0';
-	memcpy(threadRankPath + 1, ".txt", 4);
-	FILE* in = fopen(threadRankPath, "w"); // открываем файл для записи
-
 	for (int listId = 0; listId < LIST_AMOUNT; ++listId) {
 		double start = MPI_Wtime();
 		for (int i = 0; i < tasksPerProc; ++i) {
@@ -174,7 +169,7 @@ void* executeFunc(void* me) {
 		double end = MPI_Wtime();
 		iterTime = end - start;
 		int iterCounter = executedLists;
-		fprintf(in, "%d - %d - %d - %f - %f\n", rank, iterCounter, totalExecutedTasks, globalRes, iterTime);
+		printf("%d - %d - %d - %f - %f\n", rank, iterCounter, totalExecutedTasks, globalRes, iterTime);
 		executedLists++;
 		// блокируем все процессы до тех пор пока они не достигнут этой точки в коде
 		MPI_Barrier(MPI_COMM_WORLD);
@@ -188,12 +183,12 @@ void* executeFunc(void* me) {
 	pthread_mutex_unlock(&mutex);
 	// закрываем файл и завершаем работу
 	free(list);
-	fclose(in);
 
 	pthread_exit(NULL);
 }
 
 int main(int argc, char** argv) {
+	// переменная отвечающая за уровень поддержки потоков
 	int provided;
 	// в многопоточных программах используется вместо MPI_Init()
 	MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
@@ -204,7 +199,7 @@ int main(int argc, char** argv) {
 	*/
 	MPI_Comm_size(MPI_COMM_WORLD, &size);
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
+	// если запрашиваемый уровень поддержки потоков и фактический не совпадают выбрасывается ошибка
 	if (provided != MPI_THREAD_MULTIPLE) {
 		if (rank == 0) {
 			printf("The requested level of thread support does not correspond to the actual level of thread support.\n");
@@ -234,13 +229,12 @@ int main(int argc, char** argv) {
 
 	pthread_attr_t attrs; // объект задающий атрибуты потока
 	pthread_attr_init(&attrs); // инициализация атрибутов потока
-	
 	pthread_attr_setdetachstate(&attrs, PTHREAD_CREATE_JOINABLE); // установка свойства "присоединяемости" потока в атрибутах
 
 	// порождение потоков
-	pthread_create(&sendThread, &attrs, sendFunc, NULL);
-	pthread_create(&recvThread, &attrs, recvFunc, NULL);
-	pthread_create(&executeThread, &attrs, executeFunc, NULL);
+	pthread_create(&sendThread, &attrs, sendFunc, NULL); // sendThread будет выполнять функцию sendFunc
+	pthread_create(&recvThread, &attrs, recvFunc, NULL); // recvThread будет выполнять функцию recvFunc
+	pthread_create(&executeThread, &attrs, executeFunc, NULL); // executeThread будет выполнять функцю executeFunc
 
 	// освобождение ресурсов занятых атрибутами
 	pthread_attr_destroy(&attrs);
