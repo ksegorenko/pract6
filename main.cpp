@@ -40,10 +40,10 @@ void* sendFunc(void* me) {
 	// захватываем мьютекс для потока отправки запросов
 	pthread_mutex_lock(&sendThreadMutex);
 	while (true) {
-		// поток ожидает появления сигнала о завершении задач(от другого процесса)
+		// поток ожидает появления сигнала о завершении задач от excuteThread
 		pthread_cond_wait(&tasksFinished, &sendThreadMutex);
 		// если получен сигнал о завершении задач, то устанавливается флаг sendThreadGetSignal
-		sendThreadGetSignal = true;
+		sendThreadGetSignal = true; // (sendThread получил сигнал)
 
 		if (executedLists > LIST_AMOUNT) {
 			// если все списки задач были выполнены то поток освобождает мьютекс и завершает своё выполнение
@@ -61,11 +61,11 @@ void* sendFunc(void* me) {
 			MPI_Send(&sendRequestFlag, 1, MPI_C_BOOL, i, 0, MPI_COMM_WORLD);
 			// получение ответа о количестве задач
 			MPI_Recv(&recvTaskAmount, 1, MPI_INT, 1, 2, MPI_COMM_WORLD, &status);
-			// при получении ответа проверяется что получаемый результат не равен нулю
+			// при получении ответа проверяется что число тасок которые будем делать не равно нулю
 			if (recvTaskAmount == 0) {
 				continue;
 			}
-			// если количество задач не равно нулю то принимаются данные с полученными задачами из другого потока
+			// если количество задач не равно нулю то принимаются данные с полученными задачами из recvThread
 			MPI_Recv(&(list[0]), recvTaskAmount, MPI_INT, i, 1, MPI_COMM_WORLD, &status);
 			break;
 		}
@@ -76,8 +76,7 @@ void* sendFunc(void* me) {
 		// обнуляется счетчик выполненных задач
 		executedThreadTasks = 0;
 
-		// Если же счетчик выполненных задач другим потоком обнулен, то поток получает сигнал о постановке новых задач,
-		// устанавливает executeThreadGetSignal в false и освобождает мьютекс.
+		// Если же счетчик выполненных задач другим потоком обнулен, то поток получает сигнал о постановке новых задач, устанавливает executeThreadGetSignal в false и освобождает мьютекс.
 		while (executeThreadGetSignal == false)
 			pthread_cond_signal(&newTasksAvailable);
 
@@ -93,7 +92,7 @@ void* recvFunc(void* me) {
 		// поток ожидает получения сигнала запроса на выполнение задач от других процессов в сети MPI
 		bool recvRequestFlag = false;
 		//  Если получен сигнал о запросе на выполнение задач от другого процесса, то поток устанавливает флаг recvRequestFlag в true и получает идентификатор процесса-отправителя.
-		MPI_Recv(&recvRequestFlag, 1, MPI_INT, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &status);
+		MPI_Recv(&recvRequestFlag, 1, MPI_C_BOOL, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &status);
 
 		// если получен сигнал о завершении работы потока(ноль) то поток завершает свое выполнение
 		if (recvRequestFlag == 0) {
@@ -115,12 +114,13 @@ void* recvFunc(void* me) {
 			// обновление количества задач которые остались для других потокв и процессов
 			tasks = executedThreadTasks + taskLeft;
 		}
-		// освобождае6м мьютекс управляющий доступом к общему списку задач
+		// освобождаем мьютекс управляющий доступом к общему списку задач
 		pthread_mutex_unlock(&mutex);
 	}
 	// поток продолжает ожидать другие запросы
 }
 
+// функция, отвечающая за выполнение и обработку самих задач
 void* executeFunc(void* me) {
 	int tasksPerProc = TASK_AMOUNT / size; // количество задач которые будут выполнены в каждом процессе
 	list = new int[tasksPerProc];
@@ -131,7 +131,7 @@ void* executeFunc(void* me) {
 	for (int listId = 0; listId < LIST_AMOUNT; ++listId) {
 		double start = MPI_Wtime();
 		for (int i = 0; i < tasksPerProc; ++i) {
-			// заполняем массив list задачами, которые будут выполнены в этом цикле
+			// заполняем массив list задачами, которые будут выполнены
 			list[i] = i * abs(rank - (executedLists % size)) * 64;
 		}
 		tasks = tasksPerProc;
@@ -154,18 +154,19 @@ void* executeFunc(void* me) {
 				}
 			}
 			// блокируем поток и ожидаем сигнала от другого потока
-			totalExecutedTasks += executedThreadTasks;
-			pthread_mutex_lock(&executeThreadMutex);
-
+			totalExecutedTasks += executedThreadTasks; // увеличиваем общее количество выполненных задач
+			pthread_mutex_lock(&executeThreadMutex); // блокировка мьютекса executeThreadMutex чтобы предотвратить возможность конфликта доступа разделяемым ресурсам
+			// например избежать конфликта досткпа к totalExecutedTasks
 			while (sendThreadGetSignal == false) {
+				// посылаем сигнал потоку sendThread о том что мы выполнили свои таски
 				pthread_cond_signal(&tasksFinished);
 			}
-			sendThreadGetSignal = false;
-			pthread_cond_wait(&newTasksAvailable, &executeThreadMutex);
-			executeThreadGetSignal = true;
-			pthread_mutex_unlock(&executeThreadMutex);
+			sendThreadGetSignal = false; // устанавливаем значение false чтобы другой поток мог продолжить выполнение
+			pthread_cond_wait(&newTasksAvailable, &executeThreadMutex); // текущий поток ждет сигнала от sendThread пока станут доступными новые таски
+			executeThreadGetSignal = true; // устанавливаем значение true 
+			pthread_mutex_unlock(&executeThreadMutex); // 
 		}
-		// запсываем результаты в файл и увеличиваем значение executedLists
+		// запсываем результаты в консоль и увеличиваем значение executedLists
 		double end = MPI_Wtime();
 		iterTime = end - start;
 		int iterCounter = executedLists;
@@ -176,14 +177,13 @@ void* executeFunc(void* me) {
 	}
 	// устанавливаем значение recvRequestFlag и отправляем его в процесс с номером rank 
 	pthread_mutex_lock(&mutex);
-	bool recvRequestFlag = false;
+	bool recvRequestFlag = false; // 
 	MPI_Send(&recvRequestFlag, 1, MPI_C_BOOL, rank, 0, MPI_COMM_WORLD);
 	executedLists++;
 	pthread_cond_signal(&tasksFinished);
 	pthread_mutex_unlock(&mutex);
-	// закрываем файл и завершаем работу
+	// освобождаемм лист тасок и завершаем работу
 	free(list);
-
 	pthread_exit(NULL);
 }
 
@@ -242,7 +242,7 @@ int main(int argc, char** argv) {
 	// для каждого присоединяемого потока один из других потоков должен явно вызвать эту функцию
 	// в протвном случае завершившись поток освободит свои ресурсы, что может привести к утечкам памяти
 	pthread_join(sendThread, NULL);
-	pthread_join(receiveThread, NULL);
+	pthread_join(recvThread, NULL);
 	pthread_join(executeThread, NULL);
 
 	double endTime = MPI_Wtime();
