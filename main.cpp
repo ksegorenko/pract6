@@ -7,8 +7,8 @@
 #include <math.h>
 #include <string.h>
 
-#define LIST_AMOUNT 1000
-#define TASK_AMOUNT 1024
+#define LIST_AMOUNT 1000 // число листов
+#define TASK_AMOUNT 1024 // число тасок в каждом листе
 
 int size;
 int rank;
@@ -24,8 +24,6 @@ bool sendThreadGetSignal = false;
 bool executeThreadGetSignal = false;
 
 pthread_mutex_t mutex;
-pthread_mutex_t sendThreadMutex;
-pthread_mutex_t executeThreadMutex;
 
 pthread_cond_t tasksFinished;
 pthread_cond_t newTasksAvailable;
@@ -38,16 +36,16 @@ pthread_t executeThread;
 void* sendFunc(void* me) {
 	MPI_Status status;
 	// захватываем мьютекс для потока отправки запросов
-	pthread_mutex_lock(&sendThreadMutex);
+	pthread_mutex_lock(&mutex);
 	while (true) {
 		// поток ожидает появления сигнала о завершении задач от excuteThread
-		pthread_cond_wait(&tasksFinished, &sendThreadMutex);
+		pthread_cond_wait(&tasksFinished, &mutex);
 		// если получен сигнал о завершении задач, то устанавливается флаг sendThreadGetSignal
 		sendThreadGetSignal = true; // (sendThread получил сигнал)
 
 		if (executedLists > LIST_AMOUNT) {
 			// если все списки задач были выполнены то поток освобождает мьютекс и завершает своё выполнение
-			pthread_mutex_unlock(&sendThreadMutex);
+			pthread_mutex_unlock(&mutex);
 			pthread_exit(NULL);
 		}
 		bool sendRequestFlag = true;
@@ -80,7 +78,7 @@ void* sendFunc(void* me) {
 		while (executeThreadGetSignal == false)
 			pthread_cond_signal(&newTasksAvailable);
 
-		executeThreadGetSignal = false;
+		executeThreadGetSignal = false; // устанавливаем значение executeThreadGetSignal в false чтобы поток мог продолжить выполнение
 		pthread_mutex_unlock(&mutex);
 	}
 }
@@ -147,24 +145,25 @@ void* executeFunc(void* me) {
 			for (int taskId = 0; taskId < tasks; ++taskId) {
 				pthread_mutex_lock(&mutex);
 				executedThreadTasks++;
+				int endOfIterations = list[taskId];
 				pthread_mutex_unlock(&mutex);
 
-				for (int i = 0; i < list[taskId]; ++i) {
+				for (int i = 0; i < endOfIterations; ++i) {
 					globalRes += cos(i);
 				}
 			}
 			// блокируем поток и ожидаем сигнала от другого потока
 			totalExecutedTasks += executedThreadTasks; // увеличиваем общее количество выполненных задач
-			pthread_mutex_lock(&executeThreadMutex); // блокировка мьютекса executeThreadMutex чтобы предотвратить возможность конфликта доступа разделяемым ресурсам
+			pthread_mutex_lock(&mutex); // блокировка мьютекса executeThreadMutex чтобы предотвратить возможность конфликта доступа разделяемым ресурсам
 			// например избежать конфликта досткпа к totalExecutedTasks
-			while (sendThreadGetSignal == false) {
+			while (sendThreadGetSignal == false) { // пока поток принимающий запрос на отправку задач не получит сигнал
 				// посылаем сигнал потоку sendThread о том что мы выполнили свои таски
 				pthread_cond_signal(&tasksFinished);
 			}
 			sendThreadGetSignal = false; // устанавливаем значение false чтобы другой поток мог продолжить выполнение
-			pthread_cond_wait(&newTasksAvailable, &executeThreadMutex); // текущий поток ждет сигнала от sendThread пока станут доступными новые таски
-			executeThreadGetSignal = true; // устанавливаем значение true 
-			pthread_mutex_unlock(&executeThreadMutex); // 
+			pthread_cond_wait(&newTasksAvailable, &mutex); // текущий поток ждет сигнала от sendThread пока станут доступными новые таски
+			executeThreadGetSignal = true; // executeThread получил сигнал и установил значение флага true
+			pthread_mutex_unlock(&mutex); // разблокировка мьютекса
 		}
 		// запсываем результаты в консоль и увеличиваем значение executedLists
 		double end = MPI_Wtime();
@@ -177,7 +176,7 @@ void* executeFunc(void* me) {
 	}
 	// устанавливаем значение recvRequestFlag и отправляем его в процесс с номером rank 
 	pthread_mutex_lock(&mutex);
-	bool recvRequestFlag = false; // 
+	bool recvRequestFlag = false;
 	MPI_Send(&recvRequestFlag, 1, MPI_C_BOOL, rank, 0, MPI_COMM_WORLD);
 	executedLists++;
 	pthread_cond_signal(&tasksFinished);
@@ -252,8 +251,6 @@ int main(int argc, char** argv) {
 
 	// освобождаем ресурсы занятые мьютексами и условными переменнными
 	pthread_mutex_destroy(&mutex);
-	pthread_mutex_destroy(&sendThreadMutex);
-	pthread_mutex_destroy(&executeThreadMutex);
 	pthread_cond_destroy(&tasksFinished);
 	pthread_cond_destroy(&newTasksAvailable);
 
